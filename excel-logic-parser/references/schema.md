@@ -17,8 +17,8 @@
 | total_logics | int | 逻辑条目总数 |
 | action_stats | dict | action类型统计（key=类型, value=数量） |
 | solution_stats | dict | solution类型统计（key=类型, value=数量） |
-| red_font_logics | int | 调整日志列红色字体标记的条目数 |
-| red_scene_logics | int | 字段逻辑场景列红色字体标记的条目数 |
+| red_scene_logics | int | 字段逻辑场景(B列)含红色字体的条目数 |
+| red_scene_with_text | int | 字段逻辑场景(B列)含红色备注文本的条目数 |
 
 ## fields 数组结构
 
@@ -48,6 +48,8 @@
   "field_name": "新生儿听力检查阳性随访治疗",
   "field_note": null,
   "logic_scene": "新生儿听力检查阳性随访治疗为空，提示",
+  "logic_scene_is_red": false,
+  "logic_scene_red_text": null,
   "prompt_text": "【新生儿听力检查阳性随访治疗】：（仅提示）新生儿听力检查阳性随访治疗为空",
   "solution": {
     "type": "prompt_only",
@@ -57,9 +59,8 @@
   "action": {
     "type": "delete_logic",
     "detail": "删除逻辑20260607",
-    "is_red": true
-  },
-  "logic_scene_is_red": false
+    "is_red": false
+  }
 }
 ```
 
@@ -69,10 +70,11 @@
 | field_name | string | 所属字段名称 |
 | field_note | string\|null | 字段备注 |
 | logic_scene | string\|null | 字段逻辑场景描述（需转为Python逻辑的中文描述） |
+| logic_scene_is_red | bool | 字段逻辑场景(B列)是否含红色字体（特殊关注） |
+| logic_scene_red_text | array\|null | B列中红色字体的文本内容列表（红色备注行） |
 | prompt_text | string\|null | 质检结果提示文案 |
 | solution | object | 质控解决方案（见下） |
 | action | object | 调整日志（见下） |
-| logic_scene_is_red | bool | 逻辑场景列是否为红色字体（特殊关注） |
 
 ## action 调整日志结构
 
@@ -80,18 +82,18 @@
 |------|------|------|
 | type | string | action类型（见下表） |
 | detail | string | 调整日志原文 |
-| is_red | bool | 是否红色字体标记（需特别关注） |
+| is_red | bool | 是否需特别关注（基于B列红色字体判断，非E列） |
 
 ### action.type 枚举值
 
-| type | 说明 | is_red默认 | 脚本处理方式 |
-|------|------|------------|-------------|
-| delete_logic | 删除逻辑 | true | 在该字段的函数方法上删除此逻辑 |
-| add_logic | 新增逻辑 | false | 增加此逻辑 |
-| delete_visit_face_to_face | 删除访视方式为面对面 | false | 删除面对面访视相关逻辑 |
-| adjust_logic | 逻辑调整 | false | 调整已有逻辑（如范围值变更） |
-| none | 无调整日志 | false | 保持原样 |
-| unknown | 未识别的类型 | false | 需人工确认 |
+| type | 说明 | 脚本处理方式 |
+|------|------|-------------|
+| delete_logic | 删除逻辑 | 在该字段的函数方法上删除此逻辑 |
+| add_logic | 新增逻辑 | 增加此逻辑 |
+| delete_visit_face_to_face | 删除访视方式为面对面 | 删除面对面访视相关逻辑 |
+| adjust_logic | 逻辑调整 | 调整已有逻辑（如范围值变更） |
+| none | 无调整日志 | 保持原样 |
+| unknown | 未识别的类型 | 需人工确认 |
 
 ## solution 质控解决方案结构
 
@@ -122,12 +124,14 @@
 
 ```python
 ACTION_PATTERNS = [
-    (r"^删除逻辑",   "delete_logic",   True),
-    (r"^新增逻辑",   "add_logic",      False),
+    (r"^删除逻辑",   "delete_logic"),
+    (r"^新增逻辑",   "add_logic"),
     # 添加新规则：
-    (r"^你的新模式", "new_type_name",  False),
+    (r"^你的新模式", "new_type_name"),
 ]
 ```
+
+注意：`is_red` 不再由 ACTION_PATTERNS 配置，而是基于 B列(字段逻辑场景)的红色字体自动检测。
 
 ### 添加新的 solution 类型
 
@@ -135,7 +139,10 @@ ACTION_PATTERNS = [
 
 ### 调整红色字体检测
 
+红色字体检测针对 **B列（字段逻辑场景）**，支持 Rich Text（同一单元格内混合黑白+红色文字）。
+
 编辑 `RED_COLOR_PATTERNS` 列表，添加或修改需要检测的颜色模式。
+同时可通过 `get_red_text()` 函数提取红色字体的文本内容。
 
 ### 调整列映射
 
