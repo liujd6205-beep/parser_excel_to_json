@@ -61,16 +61,19 @@ SHEET_NAME = None
 
 # 红色字体颜色模式（匹配这些RGB值的字体视为红色，需特别关注）
 # 格式：ARGB字符串，匹配包含这些模式即视为红色
+# 注意：红色字体只出现在B列(字段逻辑场景)中，部分特殊条目下方有红色备注行
+# 支持Rich Text检测（同一单元格内混合黑白+红色文字）
 RED_COLOR_PATTERNS = ["FF0000"]
 
 # 调整日志解析规则
-# 格式：(正则模式, action_type, 是否标记为红色)
+# 格式：(正则模式, action_type)
 # 按顺序匹配，第一个匹配到的规则生效
+# 注意：is_red 不再由调整日志决定，而是由B列(字段逻辑场景)的红色字体决定
 ACTION_PATTERNS = [
-    (r"^删除逻辑",            "delete_logic",            True),   # 删除逻辑（红色字体标记）
-    (r"^新增逻辑",            "add_logic",               False),  # 新增逻辑
-    (r"^删除访视方式为面对面",  "delete_visit_face_to_face", False), # 删除访视方式为面对面
-    (r"^逻辑调整",            "adjust_logic",            False),  # 逻辑调整（范围值调整等）
+    (r"^删除逻辑",            "delete_logic"),            # 删除逻辑
+    (r"^新增逻辑",            "add_logic"),               # 新增逻辑
+    (r"^删除访视方式为面对面",  "delete_visit_face_to_face"), # 删除访视方式为面对面
+    (r"^逻辑调整",            "adjust_logic"),            # 逻辑调整（范围值调整等）
 ]
 
 # 质控解决方案解析规则
@@ -149,7 +152,17 @@ def parse_solution(text):
 # ============================================================
 
 def is_red_font(cell):
-    """检测单元格是否包含红色字体"""
+    """
+    检测单元格是否包含红色字体（支持rich text部分红色检测）。
+    
+    红色字体只出现在B列(字段逻辑场景)中，部分特殊条目下方会有红色备注行。
+    本函数同时检查：
+    1. 单元格默认字体颜色
+    2. Rich Text中每个run的字体颜色（支持同一单元格内混合黑白+红色文字）
+    """
+    from openpyxl.cell.rich_text import CellRichText
+
+    # 1. 检查默认字体颜色
     if cell.font and cell.font.color:
         c = cell.font.color
         if c.type == 'rgb' and c.rgb:
@@ -157,25 +170,84 @@ def is_red_font(cell):
             for pattern in RED_COLOR_PATTERNS:
                 if pattern in rgb_str and rgb_str != 'FF000000':
                     return True
+
+    # 2. 检查 Rich Text 中每个 run 的字体颜色（支持部分红色）
+    if isinstance(cell.value, CellRichText):
+        for run in cell.value:
+            if hasattr(run, 'font') and run.font and run.font.color:
+                c = run.font.color
+                if c.type == 'rgb' and c.rgb:
+                    rgb_str = str(c.rgb).upper()
+                    for pattern in RED_COLOR_PATTERNS:
+                        if pattern in rgb_str and rgb_str != 'FF000000':
+                            return True
+
     return False
 
 
-def parse_action(adjust_log, cell):
-    """解析调整日志，返回action信息"""
+def get_red_text(cell):
+    """
+    提取单元格中红色字体的文本内容。
+    
+    用于提取B列(字段逻辑场景)中红色备注行的文本，
+    部分特殊条目在逻辑场景下方有红色备注，需要特别关注。
+    
+    返回: 红色文本列表，若无红色字体则返回None
+    """
+    from openpyxl.cell.rich_text import CellRichText
+
+    red_texts = []
+
+    # 检查 Rich Text 中红色字体的文本
+    if isinstance(cell.value, CellRichText):
+        for run in cell.value:
+            if hasattr(run, 'font') and run.font and run.font.color:
+                c = run.font.color
+                if c.type == 'rgb' and c.rgb:
+                    rgb_str = str(c.rgb).upper()
+                    for pattern in RED_COLOR_PATTERNS:
+                        if pattern in rgb_str and rgb_str != 'FF000000':
+                            text = run.text if hasattr(run, 'text') else str(run)
+                            if text.strip():
+                                red_texts.append(text.strip())
+                            break
+
+    # 如果整个单元格默认字体为红色，也提取文本
+    if not red_texts and cell.font and cell.font.color:
+        c = cell.font.color
+        if c.type == 'rgb' and c.rgb:
+            rgb_str = str(c.rgb).upper()
+            for pattern in RED_COLOR_PATTERNS:
+                if pattern in rgb_str and rgb_str != 'FF000000':
+                    val = str(cell.value).strip() if cell.value else ""
+                    if val:
+                        red_texts.append(val)
+                    break
+
+    return red_texts if red_texts else None
+
+
+def parse_action(adjust_log, b_cell):
+    """
+    解析调整日志，返回action信息。
+    
+    红色字体检测基于B列(字段逻辑场景)，而非E列(调整日志)。
+    红色字体出现在字段逻辑场景中，表示该逻辑需要特别关注。
+    """
     if not adjust_log:
         return {"type": "none", "detail": "", "is_red": False}
 
     text = str(adjust_log).strip()
 
-    for pattern, action_type, default_red in ACTION_PATTERNS:
+    for pattern, action_type in ACTION_PATTERNS:
         if re.match(pattern, text):
             return {
                 "type": action_type,
                 "detail": text,
-                "is_red": default_red or is_red_font(cell)
+                "is_red": is_red_font(b_cell)
             }
 
-    return {"type": "unknown", "detail": text, "is_red": is_red_font(cell)}
+    return {"type": "unknown", "detail": text, "is_red": is_red_font(b_cell)}
 
 
 def parse_excel_to_json(excel_path, output_path=None, sheet_name=None,
@@ -238,26 +310,27 @@ def parse_excel_to_json(excel_path, output_path=None, sheet_name=None,
                 current_field_name = field_text
                 current_field_note = None
 
-        # 解析action
-        e_cell = ws.cell(row=row, column=COLUMN_MAP["adjust_log"])
-        action = parse_action(e_val, e_cell)
+        # 检测B列(字段逻辑场景)红色字体
+        b_cell = ws.cell(row=row, column=COLUMN_MAP["logic_scene"])
+        b_is_red = is_red_font(b_cell)
+        b_red_text = get_red_text(b_cell)
+
+        # 解析action（红色字体检测基于B列，而非E列）
+        action = parse_action(e_val, b_cell)
 
         # 解析solution
         solution = parse_solution(d_val)
-
-        # 检测B列是否红色字体
-        b_cell = ws.cell(row=row, column=COLUMN_MAP["logic_scene"])
-        b_is_red = is_red_font(b_cell)
 
         entry = {
             "row": row,
             "field_name": current_field_name,
             "field_note": current_field_note,
             "logic_scene": str(b_val).strip() if b_val else None,
+            "logic_scene_is_red": b_is_red,
+            "logic_scene_red_text": b_red_text,
             "prompt_text": str(c_val).strip() if c_val else None,
             "solution": solution,
             "action": action,
-            "logic_scene_is_red": b_is_red,
         }
 
         entries.append(entry)
@@ -290,8 +363,8 @@ def parse_excel_to_json(excel_path, output_path=None, sheet_name=None,
         "total_logics": len(entries),
         "action_stats": action_stats,
         "solution_stats": solution_stats,
-        "red_font_logics": sum(1 for e in entries if e["action"]["is_red"]),
         "red_scene_logics": sum(1 for e in entries if e["logic_scene_is_red"]),
+        "red_scene_with_text": sum(1 for e in entries if e.get("logic_scene_red_text")),
     }
 
     output = {
@@ -311,8 +384,8 @@ def parse_excel_to_json(excel_path, output_path=None, sheet_name=None,
     print(f"解析完成: {output_path}")
     print(f"  字段总数: {summary['total_fields']}")
     print(f"  逻辑条目总数: {summary['total_logics']}")
-    print(f"  红色字体(调整日志): {summary['red_font_logics']}")
-    print(f"  红色字体(逻辑场景): {summary['red_scene_logics']}")
+    print(f"  红色字体(字段逻辑场景): {summary['red_scene_logics']}")
+    print(f"  含红色备注文本: {summary['red_scene_with_text']}")
     print(f"\n  Action类型统计:")
     for k, v in sorted(action_stats.items(), key=lambda x: -x[1]):
         print(f"    {k}: {v}")
